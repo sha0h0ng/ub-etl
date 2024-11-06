@@ -7,18 +7,22 @@ import psycopg2
 from dotenv import load_dotenv
 import logging
 
-# Configure logging
+# Set up logging to include the time, log level, and message in each log entry
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def load_environment_variables():
+    # Load environment variables from a .env file located in the parent directory
+    # If loading fails, log a warning and terminate the program
     if not load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env')):
         logging.warning("Environment variables could not be loaded.")
-        exit(1)  # Exit the program with a non-zero status to indicate an error
+        exit(1)  # Exit with a non-zero status to indicate an error
 
 
 def get_db_config():
+    # Retrieve database configuration from environment variables
+    # Return a dictionary with database connection parameters
     return {
         'dbname': os.getenv('DB_NAME'),
         'user': os.getenv('DB_USER'),
@@ -29,6 +33,8 @@ def get_db_config():
 
 
 def get_api_credentials():
+    # Retrieve API credentials from environment variables
+    # Return a dictionary with API client key and secret
     return {
         'client_key': os.getenv('CLIENT_KEY'),
         'client_secret': os.getenv('CLIENT_SECRET')
@@ -36,6 +42,8 @@ def get_api_credentials():
 
 
 def get_account_details():
+    # Retrieve account details from environment variables
+    # Return a dictionary with account name and ID
     return {
         'name': os.getenv('ACCOUNT_NAME'),
         'id': os.getenv('ACCOUNT_ID')
@@ -43,22 +51,25 @@ def get_account_details():
 
 
 def initialize_db_connection(db_config):
+    # Establish a connection to the database using the provided configuration
     try:
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
         return conn, cur
     except psycopg2.Error as e:
         logging.error(f"Database connection error: {e}")
-        exit(1)
+        exit(1)  # Exit with a non-zero status to indicate an error
 
 
 def force_sleep(sleep_timer):
+    # Log a message indicating a pause in execution and sleep for the specified duration
     logging.info(
         f"Taking a break for {sleep_timer/60} minutes... [Current time: {time.ctime()}]")
     time.sleep(sleep_timer)
 
 
 def insert_course_data(cursor, course):
+    # Insert or update course data in the database
     cursor.execute('''
         INSERT INTO user_course_data (
             user_id, user_name, user_surname, user_email, user_role, user_external_id,
@@ -116,6 +127,7 @@ def insert_course_data(cursor, course):
 
 
 def fetch_and_store_data(cur, conn, api_url, api_credentials):
+    # Fetch data from the API and store it in the database
     total_inserted = 0
     while api_url:
         response = requests.get(api_url, auth=HTTPBasicAuth(
@@ -131,16 +143,17 @@ def fetch_and_store_data(cur, conn, api_url, api_credentials):
             handle_http_error(response, e)
             continue
 
-        api_url = data.get('next')
+        api_url = data.get('next')  # Get the URL for the next page of results
         logging.info(f"Next page link: {api_url}")
 
         for course in data['results']:
             insert_course_data(cur, course)
             total_inserted += 1
 
-        conn.commit()
+        conn.commit()  # Commit the transaction to the database
         logging.info(f"Current total records inserted: {total_inserted}")
 
+        # Implement sleep logic based on the number of records inserted
         if total_inserted % 10000 == 0:
             force_sleep(1800)
         elif total_inserted % 1000 == 0:
@@ -150,6 +163,7 @@ def fetch_and_store_data(cur, conn, api_url, api_credentials):
 
 
 def handle_http_error(response, error):
+    # Handle specific HTTP errors by logging and sleeping for a specified duration
     if response.status_code == 503:
         logging.warning("HTTPError 503: Service Unavailable")
         force_sleep(3600)
@@ -161,25 +175,30 @@ def handle_http_error(response, error):
         force_sleep(1800)
     else:
         logging.error(f"HTTPError: {error}")
-        raise error
+        raise error  # Raise the error for unhandled status codes
 
 
 def parse_timestamp(timestamp_str):
+    # Convert a timestamp string to a datetime object, handling UTC format
     if timestamp_str:
         return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
     return None
 
 
 def main():
-    load_environment_variables()
-    db_config = get_db_config()
-    api_credentials = get_api_credentials()
-    account_details = get_account_details()
+    # Main function to load environment variables, initialize DB connection, and fetch data
+    load_environment_variables()  # Load environment variables from the .env file
+    db_config = get_db_config()  # Get the database configuration
+    api_credentials = get_api_credentials()  # Get the API credentials
+    account_details = get_account_details()  # Get the account details
 
+    # Initialize the database connection and fetch data
     with initialize_db_connection(db_config) as (conn, cur):
+        # Construct the initial API URL using account details
         initial_url = f"https://{account_details['name']}.udemy.com/api-2.0/organizations/{account_details['id']}/analytics/user-course-activity/"
+        # Fetch and store data from the API
         fetch_and_store_data(cur, conn, initial_url, api_credentials)
 
 
 if __name__ == "__main__":
-    main()
+    main()  # Execute the main function if the script is run directly
