@@ -70,12 +70,60 @@ ACCOUNT_ID=your_udemy_business_account_id
 - Implements error handling and retry logic
 - Features configurable sleep timers to prevent API throttling
 
+```mermaid
+flowchart TD
+    A[Start] --> B[Load Environment Variables]
+    B --> C{Environment Variables Loaded?}
+    C -->|No| D[Log Warning & Exit]
+    C -->|Yes| E[Get DB Config]
+    E --> F[Get API Credentials]
+    F --> G[Get Account Details]
+    G --> H[Initialize DB Connection]
+    H --> I{DB Connection Successful?}
+    I -->|No| J[Log Error & Exit]
+    I -->|Yes| K[Construct Initial API URL]
+    K --> L[Fetch and Store Data]
+    L --> M{More Data?}
+    M -->|Yes| L
+    M -->|No| N[Log Total Records Inserted]
+    N --> O[End]
+```
+
 ### user_course_activity.py
 
 - Retrieves user activity data for all courses
 - Implements upsert logic to handle data updates
 - Includes robust error handling for API timeouts and rate limits
 - Manages incremental data loading
+
+```mermaid
+graph TD;
+    A[Start] --> B[Load Environment Variables]
+    B --> C[Get DB Config]
+    B --> D[Get API Credentials]
+    B --> E[Get Account Details]
+    C --> F[Initialize DB Connection]
+    D --> F
+    E --> F
+    F --> G[Construct Initial API URL]
+    G --> H[Fetch and Store Data]
+    H --> I[Fetch Data from API]
+    I --> J[Insert Course Data]
+    J --> K[Commit Transaction]
+    K --> L{More Data?}
+    L -->|Yes| I
+    L -->|No| M[End]
+
+    subgraph Error Handling
+        I --> N[Handle HTTP Error]
+        N --> I
+    end
+
+    subgraph Sleep Logic
+        J --> O[Force Sleep]
+        O --> I
+    end
+```
 
 ## Rate Limiting and Error Handling
 
@@ -113,27 +161,6 @@ The pipelines are designed to:
 - Avoid duplicate entries
 - Update existing records with the latest information
 - Maintain data consistency through proper transaction management
-
-## Logic for `course_catalog.py`
-
-```mermaid
-flowchart TD
-    A[Start] --> B[Load Environment Variables]
-    B --> C{Environment Variables Loaded?}
-    C -->|No| D[Log Warning & Exit]
-    C -->|Yes| E[Get DB Config]
-    E --> F[Get API Credentials]
-    F --> G[Get Account Details]
-    G --> H[Initialize DB Connection]
-    H --> I{DB Connection Successful?}
-    I -->|No| J[Log Error & Exit]
-    I -->|Yes| K[Construct Initial API URL]
-    K --> L[Fetch and Store Data]
-    L --> M{More Data?}
-    M -->|Yes| L
-    M -->|No| N[Log Total Records Inserted]
-    N --> O[End]
-```
 
 ## License
 
