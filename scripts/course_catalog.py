@@ -1,213 +1,201 @@
 import os
 import time
+import logging
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
 import psycopg2
+from psycopg2 import sql
 
-# Construct the path to the .env file relative to the current file
-env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-
-# Load the .env file
-load_dotenv(dotenv_path=env_path)
-
-# Database connection details from .env
-DB_NAME = os.getenv('DB_NAME')
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_HOST = os.getenv('DB_HOST')
-DB_PORT = os.getenv('DB_PORT')
-
-# API credentials from .env
-CLIENT_KEY = os.getenv('CLIENT_KEY')
-CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-
-PAGE_SIZE = 20  # max 20
-PAGE_NUMBER = 1
-
-ACCOUNT_NAME = os.getenv('ACCOUNT_NAME')
-ACCOUNT_ID = os.getenv('ACCOUNT_ID')
-
-SHORT_SLEEP_TIMER = 300  # 5 minutes
-LONG_SLEEP_TIMER = 1800  # 30 minutes
-
-# Initialize database connection
-conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER,
-                        password=DB_PASSWORD, host=DB_HOST, port=DB_PORT)
-cur = conn.cursor()
+# Configure logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def get_or_insert_category(title, url):
-    cur.execute("SELECT id FROM categories WHERE title = %s", (title,))
-    category = cur.fetchone()
-    if category is None:
-        cur.execute(
-            "INSERT INTO categories (title, url) VALUES (%s, %s) RETURNING id", (title, url))
-        category_id = cur.fetchone()[0]
-        conn.commit()
-        return category_id
-    return category[0]
+def load_environment_variables():
+    if not load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env')):
+        logging.warning("Environment variables could not be loaded.")
+        exit(1)  # Exit the program with a non-zero status to indicate an error
 
 
-def get_or_insert_subcategory(title, url):
-    cur.execute("SELECT id FROM subcategories WHERE title = %s", (title,))
-    subcategory = cur.fetchone()
-    if subcategory is None:
-        cur.execute(
-            "INSERT INTO subcategories (title, url) VALUES (%s, %s) RETURNING id", (title, url))
-        subcategory_id = cur.fetchone()[0]
-        conn.commit()
-        return subcategory_id
-    return subcategory[0]
+def get_db_config():
+    return {
+        'dbname': os.getenv('DB_NAME'),
+        'user': os.getenv('DB_USER'),
+        'password': os.getenv('DB_PASSWORD'),
+        'host': os.getenv('DB_HOST'),
+        'port': os.getenv('DB_PORT')
+    }
 
 
-def insert_course_data(course):
-    # Insert into courses table
-    cur.execute("""
-        INSERT INTO courses (id, title, description, url, estimated_content_length, num_lectures, num_videos,
-                             mobile_native_deeplink, is_practice_test_course, num_quizzes, num_practice_tests,
-                             has_closed_caption, last_update_date, xapi_activity_id, is_custom, is_imported, headline, level, locale)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
-    """, (
-        course['id'], course['title'], course['description'], course['url'], course['estimated_content_length'],
-        course['num_lectures'], course['num_videos'], course.get(
-            'mobile_native_deeplink'), course['is_practice_test_course'],
-        course['num_quizzes'], course['num_practice_tests'], course['has_closed_caption'],
-        course.get(
-            'last_update_date'), course['xapi_activity_id'], course['is_custom'], course['is_imported'],
-        course['headline'], course['level'], course['locale']['locale']
-    ))
+def get_api_credentials():
+    return {
+        'client_key': os.getenv('CLIENT_KEY'),
+        'client_secret': os.getenv('CLIENT_SECRET')
+    }
 
-    # Insert primary category
-    category_id = get_or_insert_category(
-        course['primary_category']['title'], course['primary_category']['url'])
-    cur.execute("""
-        INSERT INTO course_categories (course_id, category_id) VALUES (%s, %s)
-        ON CONFLICT DO NOTHING
-    """, (course['id'], category_id))
 
-    # Insert primary subcategory
-    subcategory_id = get_or_insert_subcategory(
-        course['primary_subcategory']['title'], course['primary_subcategory']['url'])
-    cur.execute("""
-        INSERT INTO course_subcategories (course_id, subcategory_id) VALUES (%s, %s)
-        ON CONFLICT DO NOTHING
-    """, (course['id'], subcategory_id))
+def get_account_details():
+    return {
+        'name': os.getenv('ACCOUNT_NAME'),
+        'id': os.getenv('ACCOUNT_ID')
+    }
 
-    # Insert topics
-    for topic in course['topics']:
+
+def initialize_db_connection(db_config):
+    try:
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor()
+        return conn, cur
+    except psycopg2.Error as e:
+        logging.error(f"Database connection error: {e}")
+        exit(1)  # Exit the program with a non-zero status to indicate an error
+
+
+def get_or_insert(cur, conn, table, title, url):
+    try:
+        cur.execute(sql.SQL("SELECT id FROM {} WHERE title = %s").format(
+            sql.Identifier(table)), (title,))
+        record = cur.fetchone()
+        if record is None:
+            cur.execute(
+                sql.SQL("INSERT INTO {} (title, url) VALUES (%s, %s) RETURNING id").format(
+                    sql.Identifier(table)),
+                (title, url))
+            record_id = cur.fetchone()[0]
+            conn.commit()
+            return record_id
+        return record[0]
+    except psycopg2.Error as e:
+        logging.error(f"Error in get_or_insert: {e}")
+        conn.rollback()
+        raise
+
+
+def insert_course_data(cur, conn, course):
+    try:
         cur.execute("""
-            INSERT INTO topics (course_id, topic_id, title, url) VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], topic['id'], topic['title'], topic['url']))
+            INSERT INTO courses (id, title, description, url, estimated_content_length, num_lectures, num_videos,
+                                 mobile_native_deeplink, is_practice_test_course, num_quizzes, num_practice_tests,
+                                 has_closed_caption, last_update_date, xapi_activity_id, is_custom, is_imported, headline, level, locale)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+        """, (
+            course['id'], course['title'], course['description'], course['url'], course['estimated_content_length'],
+            course['num_lectures'], course['num_videos'], course.get(
+                'mobile_native_deeplink'),
+            course['is_practice_test_course'], course['num_quizzes'], course['num_practice_tests'],
+            course['has_closed_caption'], course.get(
+                'last_update_date'), course['xapi_activity_id'],
+            course['is_custom'], course['is_imported'], course['headline'], course['level'], course['locale']['locale']
+        ))
 
-    # Insert promo videos
-    for video in course['promo_video_url']:
-        cur.execute("""
-            INSERT INTO promo_videos (course_id, type, label, file) VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], video['type'], video['label'], video['file']))
+        category_id = get_or_insert(
+            cur, conn, 'categories', course['primary_category']['title'], course['primary_category']['url'])
+        cur.execute("INSERT INTO course_categories (course_id, category_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (course['id'], category_id))
 
-    # Insert instructors
-    for instructor in course['instructors']:
-        cur.execute("""
-            INSERT INTO instructors (course_id, instructor_name) VALUES (%s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], instructor))
+        subcategory_id = get_or_insert(
+            cur, conn, 'subcategories', course['primary_subcategory']['title'], course['primary_subcategory']['url'])
+        cur.execute("INSERT INTO course_subcategories (course_id, subcategory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (course['id'], subcategory_id))
 
-    # Insert requirements
-    if 'requirements' in course and 'list' in course['requirements'] and isinstance(course['requirements']['list'], list):
-        for requirement in course['requirements']['list']:
-            cur.execute("""
-                INSERT INTO requirements (course_id, requirement) VALUES (%s, %s)
-                ON CONFLICT DO NOTHING
-            """, (course['id'], requirement))
+        for topic in course['topics']:
+            cur.execute("INSERT INTO topics (course_id, topic_id, title, url) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], topic['id'], topic['title'], topic['url']))
 
-    # Insert what you will learn
-    for item in course['what_you_will_learn']['list']:
-        cur.execute("""
-            INSERT INTO what_you_will_learn (course_id, item) VALUES (%s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], item))
+        for video in course['promo_video_url']:
+            cur.execute("INSERT INTO promo_videos (course_id, type, label, file) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], video['type'], video['label'], video['file']))
 
-    # Insert images
-    for size, url in course['images'].items():
-        cur.execute("""
-            INSERT INTO images (course_id, size, url) VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], size, url))
+        for instructor in course['instructors']:
+            cur.execute("INSERT INTO instructors (course_id, instructor_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], instructor))
 
-    # Insert caption languages
-    for language in course['caption_languages']:
-        cur.execute("""
-            INSERT INTO caption_languages (course_id, language) VALUES (%s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], language))
+        if 'requirements' in course and isinstance(course['requirements'].get('list'), list):
+            for requirement in course['requirements']['list']:
+                cur.execute("INSERT INTO requirements (course_id, requirement) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (course['id'], requirement))
 
-    # Insert caption locales
-    for locale in course['caption_locales']:
-        cur.execute("""
-            INSERT INTO caption_locales (course_id, locale, title, english_title) VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """, (course['id'], locale['locale'], locale['title'], locale['english_title']))
+        for item in course['what_you_will_learn']['list']:
+            cur.execute("INSERT INTO what_you_will_learn (course_id, item) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], item))
+
+        for size, url in course['images'].items():
+            cur.execute("INSERT INTO images (course_id, size, url) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], size, url))
+
+        for language in course['caption_languages']:
+            cur.execute("INSERT INTO caption_languages (course_id, language) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], language))
+
+        for locale in course['caption_locales']:
+            cur.execute("INSERT INTO caption_locales (course_id, locale, title, english_title) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        (course['id'], locale['locale'], locale['title'], locale['english_title']))
+
+    except psycopg2.Error as e:
+        logging.error(f"Error in insert_course_data: {e}")
+        conn.rollback()
+        raise
 
 
 def force_sleep(sleep_timer=300):
-    print(
-        f"Taking a break for {sleep_timer/60} minutes... [Current time: ", time.ctime(), "]")
+    logging.info(
+        f"Taking a break for {sleep_timer/60} minutes... [Current time: {time.ctime()}]")
     time.sleep(sleep_timer)
 
 
-def fetch_and_store_data(api_url):
+def fetch_and_store_data(cur, conn, api_url, api_credentials):
     total_inserted = 0
     while api_url:
-        response = requests.get(
-            api_url, auth=HTTPBasicAuth(CLIENT_KEY, CLIENT_SECRET))
-
         try:
+            response = requests.get(api_url, auth=HTTPBasicAuth(
+                api_credentials['client_key'], api_credentials['client_secret']))
             response.raise_for_status()
-            try:
-                data = response.json()
-            except requests.exceptions.JSONDecodeError as e:
-                print(f"JSONDecodeError: {e}")
-                force_sleep(LONG_SLEEP_TIMER)
-                continue  # Skip the current iteration and retry with the next iteration of the loop
+            data = response.json()
+        except requests.exceptions.JSONDecodeError as e:
+            logging.error(f"JSONDecodeError: {e}")
+            force_sleep(1800)
+            continue
         except requests.exceptions.HTTPError as e:
             if response.status_code == 524:
-                print("HTTPError 524: A timeout occurred")
-                force_sleep(LONG_SLEEP_TIMER)
+                logging.warning("HTTPError 524: A timeout occurred")
+                force_sleep(1800)
                 continue  # Retry after sleeping
             else:
-                print(f"HTTPError: {e}")
+                logging.error(f"HTTPError: {e}")
                 break  # Exit the loop for other HTTP errors
 
         # Check for next page
         api_url = data.get('next')
-        print(f"Next page link: {api_url}")
+        logging.info(f"Next page link: {api_url}")
 
         for course in data['results']:
-            insert_course_data(course)
+            insert_course_data(cur, conn, course)
             total_inserted += 1
 
-        # Commit after inserting the batch
         conn.commit()
-
-        print(f"Current total records inserted: {total_inserted}")
+        logging.info(f"Current total records inserted: {total_inserted}")
 
         # Sleep logic based on the number of records inserted
         if total_inserted % 10000 == 0:
-            force_sleep(LONG_SLEEP_TIMER)
+            force_sleep(1800)
         elif total_inserted % 1000 == 0:
-            force_sleep(SHORT_SLEEP_TIMER)
+            force_sleep(300)
 
-    print(f"Total records inserted: {total_inserted}")
+    logging.info(f"Total records inserted: {total_inserted}")
 
 
-# Start with the initial URL
-initial_url = f"https://{ACCOUNT_NAME}.udemy.com/api-2.0/organizations/{ACCOUNT_ID}/courses/list/?page_size={PAGE_SIZE}&page={PAGE_NUMBER}"
-fetch_and_store_data(initial_url)
+def main():
+    load_environment_variables()
+    db_config = get_db_config()
+    api_credentials = get_api_credentials()
+    account_details = get_account_details()
 
-# Close the database connection
-cur.close()
-conn.close()
+    with initialize_db_connection(db_config) as (conn, cur):
+        initial_url = f"https://{account_details['name']}.udemy.com/api-2.0/organizations/{account_details['id']}/courses/list/?page_size=20&page=1"
+        fetch_and_store_data(cur, conn, initial_url, api_credentials)
+
+
+if __name__ == "__main__":
+    main()
