@@ -108,7 +108,7 @@ graph TD;
     F --> G[Construct Initial API URL]
     G --> H[Fetch and Store Data]
     H --> I[Fetch Data from API]
-    I --> J[Insert Course Data]
+    I --> J[Insert User Course Activity Data]
     J --> K[Commit Transaction]
     K --> L{More Data?}
     L -->|Yes| I
